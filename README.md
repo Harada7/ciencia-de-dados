@@ -1,116 +1,108 @@
-# Crypto Social Sentiment Monitor
+# Crypto Sentiment Monitor
 
-Projeto em Python para coletar dados públicos do Reddit via endpoints `.json`, analisar sentimento sobre criptoativos e pessoas famosas, armazenar em SQLite e expor dados em API para Grafana ou planilha.
+Sistema de monitoramento e análise de sentimento do mercado de criptomoedas com base em portais de notícias internacionais.
 
-## O que esta versão otimizada faz
+Projeto final da disciplina de **Ciência de Dados** — UNIUBE (Prof. Igor Junqueira, 2026).
 
-- Usa buscas direcionadas em vez de varrer muitos subreddits.
-- Reduz erro `429 Too Many Requests` com delay, retry e backoff.
-- Evita processar posts/comentários repetidos com cache local.
-- Busca comentários somente em posts promissores.
-- Calcula sentimento com VADER.
-- Calcula `relevance_score` para priorizar registros mais úteis.
-- Expõe endpoints JSON para Grafana.
-- Gera CSV para planilha.
+---
 
-## Instalação
+## Como rodar
+
+### Pré-requisitos
 
 ```bash
-pip install -r requirements.txt
-cp .env.example .env
-uvicorn app:app --reload
+py -m pip install -r requirements.txt
+py -m pip install yfinance scipy statsmodels matplotlib
 ```
 
-Acesse:
+### 1 — Iniciar o backend (API + coleta automática)
 
-```txt
-http://127.0.0.1:8000/docs
+Abra um terminal e execute:
+
+```bash
+cd C:\Users\Casa\Documents\ciencia-de-dados
+py -m uvicorn app:app --reload
 ```
 
-## Configuração `.env`
+A API ficará disponível em: `http://localhost:8000`  
+Documentação interativa: `http://localhost:8000/docs`
 
-```env
-REDDIT_USER_AGENT=python:crypto-sentiment-monitor:v2.0 (academic project; contact: local-app)
-POLL_INTERVAL_SECONDS=900
-POST_LIMIT_PER_QUERY=10
-COMMENT_LIMIT_PER_POST=30
-MAX_COMMENT_POSTS_PER_CYCLE=12
-MAX_QUERIES_PER_CYCLE=12
-REQUEST_TIMEOUT_SECONDS=20
-REQUEST_DELAY_SECONDS=2.5
-DB_PATH=crypto_reddit.db
+### 2 — Iniciar o dashboard
+
+Abra **outro terminal** e execute:
+
+```bash
+cd C:\Users\Casa\Documents\ciencia-de-dados
+py -m streamlit run dashboard.py
 ```
 
-### Valores recomendados para evitar 429
+O dashboard abrirá automaticamente em: `http://localhost:8501`
 
-Se aparecerem muitos erros `429`, use:
+---
 
-```env
-POLL_INTERVAL_SECONDS=1800
-POST_LIMIT_PER_QUERY=5
-COMMENT_LIMIT_PER_POST=15
-MAX_COMMENT_POSTS_PER_CYCLE=5
-REQUEST_DELAY_SECONDS=4
+## Populando o banco de dados
+
+### Dados históricos via NewsAPI (rodar uma vez)
+
+```bash
+py import_newsapi.py
 ```
 
-## Endpoints principais
+Importa ~652 artigos reais de portais como Reuters, CoinDesk, Bloomberg Crypto, etc.
 
-### Saúde da API
+### Dados de semente (opcional)
 
-```txt
-GET /health
+```bash
+py seed_data.py
 ```
 
-### Executar coleta manual
+Insere 72 posts realistas para testes iniciais.
 
-```txt
-POST /collect
+---
+
+## Estrutura do projeto
+
+```
+ciencia-de-dados/
+├── app.py              # Backend FastAPI — coleta RSS, análise VADER, endpoints
+├── dashboard.py        # Dashboard Streamlit — visualizações interativas
+├── import_newsapi.py   # Importação histórica via NewsAPI.org
+├── seed_data.py        # Dados de semente para testes
+├── requirements.txt    # Dependências Python
+└── .env.example        # Variáveis de ambiente (copie para .env)
 ```
 
-### Resumo agregado
+---
 
-```txt
-GET /summary?hours=168
-```
+## Endpoints da API
 
-### Série temporal para Grafana
+| Endpoint | Método | Descrição |
+|---|---|---|
+| `/health` | GET | Status da API |
+| `/collect` | GET/POST | Dispara coleta manual |
+| `/summary?hours=168` | GET | Resumo agregado por período |
+| `/timeseries?hours=168` | GET | Série temporal do sentimento |
+| `/recent?limit=100` | GET | Últimas publicações |
+| `/clustering` | GET | Análise K-Means + TF-IDF |
+| `/export/csv` | GET | Exportar dados em CSV |
 
-```txt
-GET /timeseries?hours=168
-```
+---
 
-Com filtros:
+## Tecnologias
 
-```txt
-GET /timeseries?hours=168&crypto=bitcoin&famous_person=elon_musk
-```
+| Componente | Tecnologia |
+|---|---|
+| Backend API | FastAPI + Uvicorn |
+| Banco de dados | SQLite |
+| Análise de sentimento | VADER (vaderSentiment) |
+| Clustering de tópicos | K-Means + TF-IDF (scikit-learn) |
+| Preço do Bitcoin | yfinance |
+| Correlação estatística | scipy.stats.pearsonr |
+| Dashboard | Streamlit + Plotly |
+| Linguagem | Python 3.13 |
 
-### Registros recentes
+---
 
-```txt
-GET /recent?limit=100
-```
+## Fontes de dados monitoradas (RSS)
 
-### Exportar CSV para planilha
-
-```txt
-GET /export/csv?limit=1000
-```
-
-## Sugestão de uso no Grafana
-
-Use um datasource JSON/Infinity e conecte em:
-
-- `/summary` para tabelas agregadas.
-- `/timeseries` para gráficos de linha.
-- `/recent` para tabela de comentários/posts recentes.
-
-## Observação metodológica para o trabalho
-
-Devido às restrições atuais da API oficial do Reddit, a coleta foi realizada por meio de endpoints públicos `.json`, aplicando controle de taxa, filtros de relevância e análise de sentimento para obter dados úteis sobre criptoativos e personalidades públicas.
-
-## Limitações
-
-- A coleta pública `.json` pode sofrer rate limit.
-- A análise de sentimento é heurística e pode errar ironias ou contexto.
-- Para produção real, o ideal seria usar API oficial aprovada, filas e observabilidade mais completa.
+CoinDesk · CoinTelegraph · Decrypt · Bitcoin Magazine · CryptoNews · NewsBTC · AMBCrypto · CryptoPotato · BeInCrypto · CoinJournal · CryptoSlate · Bitcoinist · U.Today · CryptoNewsFlash · Daily Hodl · ZyCrypto
