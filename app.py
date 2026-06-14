@@ -8,7 +8,13 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+# Clustering
+from sklearn.cluster import KMeans
+from sklearn.feature_extraction.text import TfidfVectorizer
 from urllib.parse import quote_plus
+
+import xml.etree.ElementTree as ET
 
 import requests
 from dotenv import load_dotenv
@@ -25,13 +31,56 @@ REDDIT_USER_AGENT = os.getenv(
     "REDDIT_USER_AGENT",
     "python:crypto-sentiment-monitor:v2.0 (academic project; contact: local-app)",
 )
-POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "900"))
+REDDIT_CLIENT_ID     = os.getenv("REDDIT_CLIENT_ID", "")
+REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET", "")
+POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "1800"))
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
 REQUEST_DELAY_SECONDS = float(os.getenv("REQUEST_DELAY_SECONDS", "2.5"))
 POST_LIMIT_PER_QUERY = int(os.getenv("POST_LIMIT_PER_QUERY", "10"))
 COMMENT_LIMIT_PER_POST = int(os.getenv("COMMENT_LIMIT_PER_POST", "30"))
 MAX_COMMENT_POSTS_PER_CYCLE = int(os.getenv("MAX_COMMENT_POSTS_PER_CYCLE", "12"))
 MAX_QUERIES_PER_CYCLE = int(os.getenv("MAX_QUERIES_PER_CYCLE", "12"))
+
+# Token OAuth — renovado automaticamente a cada ciclo
+_oauth_token: str = ""
+_token_expires_at: float = 0.0
+
+
+def _refresh_oauth_token() -> None:
+    global _oauth_token, _token_expires_at
+    if not REDDIT_CLIENT_ID or not REDDIT_CLIENT_SECRET:
+        return
+    try:
+        resp = requests.post(
+            "https://www.reddit.com/api/v1/access_token",
+            data={"grant_type": "client_credentials"},
+            auth=(REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET),
+            headers={"User-Agent": REDDIT_USER_AGENT},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        _oauth_token = data.get("access_token", "")
+        _token_expires_at = time.time() + int(data.get("expires_in", 3600)) - 60
+        print(f"[INFO] Token OAuth obtido com sucesso.")
+    except Exception as exc:
+        print(f"[WARN] Falha ao obter token OAuth: {exc}")
+
+
+def _get_headers() -> dict:
+    if time.time() >= _token_expires_at:
+        _refresh_oauth_token()
+    if _oauth_token:
+        return {
+            "User-Agent": REDDIT_USER_AGENT,
+            "Authorization": f"Bearer {_oauth_token}",
+            "Accept": "application/json",
+        }
+    return {
+        "User-Agent": REDDIT_USER_AGENT,
+        "Accept": "application/json",
+    }
+
 
 HEADERS = {
     "User-Agent": REDDIT_USER_AGENT,
@@ -244,33 +293,140 @@ def calculate_relevance(text: str, cryptos: List[str], people: List[str], reddit
 # =========================
 # Cliente HTTP com backoff
 # =========================
-def reddit_get_json(url: str, retries: int = 4) -> Optional[Any]:
-    for attempt in range(retries):
-        # Delay + jitter para reduzir bloqueios 429.
-        time.sleep(REQUEST_DELAY_SECONDS + random.uniform(0.2, 1.2))
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT_SECONDS)
-            if resp.status_code == 429:
-                retry_after = resp.headers.get("Retry-After")
-                wait = int(retry_after) if retry_after and retry_after.isdigit() else (attempt + 1) * 10
-                print(f"[WAIT] 429 recebido. Aguardando {wait}s antes de tentar novamente.")
-                time.sleep(wait)
-                continue
-            resp.raise_for_status()
-            return resp.json()
-        except requests.RequestException as exc:
-            print(f"[WARN] Falha HTTP: {exc}")
-            time.sleep((attempt + 1) * 3)
-        except ValueError as exc:
-            print(f"[WARN] Resposta não-JSON: {exc}")
-            return None
-    return None
+# =========================
+# Coleta via RSS de portais de notícias de crypto (sem autenticação)
+# =========================
+NEWS_FEEDS = [
+    ("https://www.coindesk.com/arc/outboundfeeds/rss/", "CoinDesk"),
+    ("https://cointelegraph.com/rss", "CoinTelegraph"),
+    ("https://decrypt.co/feed", "Decrypt"),
+    ("https://bitcoinmagazine.com/feed", "BitcoinMagazine"),
+    ("https://cryptonews.com/news/feed/", "CryptoNews"),
+    ("https://www.newsbtc.com/feed/", "NewsBTC"),
+    ("https://ambcrypto.com/feed/", "AMBCrypto"),
+    ("https://cryptopotato.com/feed/", "CryptoPotato"),
+    ("https://beincrypto.com/feed/", "BeInCrypto"),
+    ("https://coinjournal.net/feed/", "CoinJournal"),
+    ("https://cryptoslate.com/feed/", "CryptoSlate"),
+    ("https://bitcoinist.com/feed/", "Bitcoinist"),
+    ("https://u.today/rss", "UToday"),
+    ("https://www.crypto-news-flash.com/feed/", "CryptoNewsFlash"),
+    ("https://dailyhodl.com/feed/", "DailyHodl"),
+    ("https://zycrypto.com/feed/", "ZyCrypto"),
+]
 
-# =========================
-# Coleta Reddit público .json
-# =========================
-def reddit_url(path: str) -> str:
-    return f"https://www.reddit.com{path}"
+RSS_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; crypto-sentiment-monitor/2.0; academic research)",
+    "Accept": "application/rss+xml, application/xml, text/xml, */*",
+}
+
+
+def parse_rss_date(date_str: str) -> str:
+    """Converte datas RSS (RFC 2822 ou ISO) para ISO 8601."""
+    if not date_str:
+        return datetime.now(timezone.utc).isoformat()
+    for fmt in (
+        "%a, %d %b %Y %H:%M:%S %z",
+        "%a, %d %b %Y %H:%M:%S %Z",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M:%SZ",
+    ):
+        try:
+            return datetime.strptime(date_str.strip(), fmt).astimezone(timezone.utc).isoformat()
+        except ValueError:
+            continue
+    return datetime.now(timezone.utc).isoformat()
+
+
+def fetch_news_rss(feed_url: str, source_name: str) -> List[Dict[str, Any]]:
+    """Busca artigos de um feed RSS de portal de notícias crypto."""
+    try:
+        time.sleep(random.uniform(0.5, 1.5))
+        resp = requests.get(feed_url, headers=RSS_HEADERS, timeout=REQUEST_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        print(f"[WARN] Feed {source_name}: {exc}")
+        return []
+
+    items = []
+    try:
+        root = ET.fromstring(resp.content)
+        # Suporte a RSS 2.0 e Atom
+        channel = root.find("channel")
+        entries = channel.findall("item") if channel is not None else root.findall(
+            "{http://www.w3.org/2005/Atom}entry"
+        )
+
+        for entry in entries:
+            def get(tag: str, attr: Optional[str] = None) -> str:
+                node = entry.find(tag)
+                if node is None:
+                    return ""
+                if attr:
+                    return (node.get(attr) or "").strip()
+                return (node.text or "").strip()
+
+            title   = get("title")
+            desc    = get("description") or get("summary") or get("{http://www.w3.org/2005/Atom}summary")
+            link    = get("link") or get("guid")
+            pub     = get("pubDate") or get("published") or get("{http://www.w3.org/2005/Atom}published")
+            author  = get("author") or get("dc:creator") or source_name
+
+            text = f"{title} {desc}".strip()
+            if not text or len(text) < 15:
+                continue
+
+            item_id = link[-20:].replace("/", "_").replace(":", "") if link else f"{source_name}_{len(items)}"
+            items.append({
+                "id": item_id,
+                "title": title,
+                "selftext": desc,
+                "permalink": link,
+                "author": author,
+                "subreddit": source_name,
+                "created_utc": parse_rss_date(pub),
+                "score": 1,
+                "num_comments": 0,
+            })
+    except ET.ParseError as exc:
+        print(f"[WARN] Erro ao parsear RSS de {source_name}: {exc}")
+
+    print(f"[INFO] {source_name}: {len(items)} artigos encontrados.")
+    return items
+
+
+def collect_cycle() -> Dict[str, int]:
+    stats = {"feeds_processed": 0, "posts_seen": 0, "matches_saved": 0}
+
+    for feed_url, source_name in NEWS_FEEDS:
+        posts = fetch_news_rss(feed_url, source_name)
+        stats["feeds_processed"] += 1
+
+        for post in posts:
+            stats["posts_seen"] += 1
+            post_id = post.get("id") or ""
+            if not post_id:
+                continue
+            post_key = f"news_{source_name}_{post_id}"
+            if is_seen(post_key):
+                continue
+            mark_seen(post_key)
+
+            text = f"{post.get('title', '')} {post.get('selftext', '')}".strip()
+            saved = analyze_and_store_item(
+                source_type="news",
+                base_reddit_id=post_key[:80],
+                subreddit=source_name,
+                author=post.get("author"),
+                permalink=post.get("permalink"),
+                created_utc=post.get("created_utc", ""),
+                text_content=text,
+                reddit_score=1,
+                num_comments=0,
+            )
+            stats["matches_saved"] += saved
+
+    return stats
 
 
 def extract_posts_from_listing(payload: Any) -> List[Dict[str, Any]]:
@@ -306,11 +462,21 @@ def analyze_and_store_item(
     cryptos_found = match_all_keywords(text_content, CRYPTO_KEYWORDS)
     people_found = match_all_keywords(text_content, FAMOUS_PEOPLE)
 
-    if not cryptos_found or not people_found:
+    # Requer pelo menos uma cripto; personalidade é opcional
+    if not cryptos_found:
         return 0
 
+    # Se nenhuma personalidade foi encontrada, usa "mercado_geral"
+    if not people_found:
+        people_found = ["mercado_geral"]
+
     sentiment = analyzer.polarity_scores(text_content)["compound"]
-    created_iso = datetime.fromtimestamp(float(created_utc), tz=timezone.utc).isoformat()
+    if isinstance(created_utc, str) and created_utc:
+        created_iso = created_utc
+    elif created_utc:
+        created_iso = datetime.fromtimestamp(float(created_utc), tz=timezone.utc).isoformat()
+    else:
+        created_iso = datetime.now(timezone.utc).isoformat()
     collected_at = datetime.now(timezone.utc).isoformat()
     relevance = calculate_relevance(text_content, cryptos_found, people_found, reddit_score, num_comments)
 
@@ -407,95 +573,6 @@ def collect_comments_for_post(post: Dict[str, Any]) -> int:
     return saved
 
 
-def process_post(post: Dict[str, Any], allow_comments: bool) -> Tuple[int, bool]:
-    post_id = post.get("id")
-    if not post_id:
-        return 0, False
-
-    post_key = f"post_{post_id}"
-    already_seen = is_seen(post_key)
-    if not already_seen:
-        mark_seen(post_key)
-
-    title = post.get("title") or ""
-    body = post.get("selftext") or ""
-    post_text = f"{title}\n{body}".strip()
-    reddit_score = int(post.get("score") or 0)
-    num_comments = int(post.get("num_comments") or 0)
-
-    saved = 0
-    if not already_seen:
-        saved += analyze_and_store_item(
-            source_type="post",
-            base_reddit_id=post_id,
-            subreddit=post.get("subreddit"),
-            author=post.get("author"),
-            permalink=post.get("permalink"),
-            created_utc=post.get("created_utc", time.time()),
-            text_content=post_text,
-            reddit_score=reddit_score,
-            num_comments=num_comments,
-        )
-
-    fetched_comments = False
-    if allow_comments and should_fetch_comments(post_text, reddit_score, num_comments):
-        saved += collect_comments_for_post(post)
-        fetched_comments = True
-
-    return saved, fetched_comments
-
-
-def fetch_search_posts(query: str) -> List[Dict[str, Any]]:
-    encoded = quote_plus(query)
-    url = reddit_url(f"/search.json?q={encoded}&sort=new&t=week&limit={POST_LIMIT_PER_QUERY}&raw_json=1")
-    payload = reddit_get_json(url)
-    return extract_posts_from_listing(payload) if payload else []
-
-
-def fetch_subreddit_posts(subreddit: str) -> List[Dict[str, Any]]:
-    url = reddit_url(f"/r/{subreddit}/new.json?limit={max(3, POST_LIMIT_PER_QUERY // 2)}&raw_json=1")
-    payload = reddit_get_json(url)
-    return extract_posts_from_listing(payload) if payload else []
-
-
-def collect_cycle() -> Dict[str, int]:
-    stats = {
-        "queries_processed": 0,
-        "subreddits_processed": 0,
-        "posts_seen": 0,
-        "comment_posts_fetched": 0,
-        "matches_saved": 0,
-    }
-
-    comment_budget = MAX_COMMENT_POSTS_PER_CYCLE
-
-    # 1) Busca principal por queries direcionadas.
-    for query in SEARCH_QUERIES[:MAX_QUERIES_PER_CYCLE]:
-        posts = fetch_search_posts(query)
-        stats["queries_processed"] += 1
-        for post in posts:
-            stats["posts_seen"] += 1
-            allow_comments = comment_budget > 0
-            saved, fetched_comments = process_post(post, allow_comments=allow_comments)
-            stats["matches_saved"] += saved
-            if fetched_comments:
-                comment_budget -= 1
-                stats["comment_posts_fetched"] += 1
-
-    # 2) Complemento por subreddits, com baixa agressividade.
-    for subreddit in SUBREDDITS:
-        posts = fetch_subreddit_posts(subreddit)
-        stats["subreddits_processed"] += 1
-        for post in posts:
-            stats["posts_seen"] += 1
-            allow_comments = comment_budget > 0
-            saved, fetched_comments = process_post(post, allow_comments=allow_comments)
-            stats["matches_saved"] += saved
-            if fetched_comments:
-                comment_budget -= 1
-                stats["comment_posts_fetched"] += 1
-
-    return stats
 
 
 def background_collector() -> None:
@@ -549,7 +626,7 @@ def health() -> Dict[str, Any]:
     }
 
 
-@app.post("/collect")
+@app.api_route("/collect", methods=["GET", "POST"])
 def collect_now() -> Dict[str, Any]:
     stats = collect_cycle()
     return {
@@ -638,6 +715,150 @@ def recent(limit: int = Query(default=100, ge=1, le=500)) -> Dict[str, Any]:
         (limit,),
     )
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "data": rows}
+
+
+# =========================
+# Clustering (K-Means + TF-IDF)
+# =========================
+
+# Stopwords do domínio cripto para não poluir os tópicos
+_CRYPTO_STOPWORDS = [
+    "bitcoin", "btc", "crypto", "cryptocurrency", "coin", "token", "blockchain",
+    "market", "price", "trading", "trade", "invest", "just", "like", "think",
+    "know", "would", "going", "one", "people", "get", "got", "really", "also",
+    "even", "back", "much", "well", "still", "good", "new", "time", "way",
+    "said", "say", "make", "made", "want", "need", "use", "used", "buy", "sell",
+    "https", "www", "com", "reddit", "post", "comment",
+]
+
+# Cache simples para não recalcular clustering a cada request
+_cluster_cache: Dict[str, Any] = {"result": None, "computed_at": None}
+_CLUSTER_CACHE_TTL_SECONDS = 300
+
+
+def _run_clustering(rows: List[Dict[str, Any]], n_clusters: int, top_terms: int) -> List[Dict[str, Any]]:
+    texts = [r["text_content"] for r in rows]
+
+    vectorizer = TfidfVectorizer(
+        max_features=500,
+        stop_words="english",
+        ngram_range=(1, 2),
+        min_df=2,
+    )
+    # Remove stopwords de cripto manualmente após vetorização
+    X = vectorizer.fit_transform(texts)
+
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    labels = kmeans.fit_predict(X)
+
+    feature_names = vectorizer.get_feature_names_out()
+    clusters = []
+    for i in range(n_clusters):
+        center = kmeans.cluster_centers_[i]
+        top_indices = center.argsort()[-top_terms:][::-1]
+        # Filtra termos que são stopwords de cripto
+        top_words = [
+            feature_names[idx]
+            for idx in top_indices
+            if feature_names[idx] not in _CRYPTO_STOPWORDS
+        ][:top_terms]
+
+        cluster_rows = [rows[j] for j in range(len(rows)) if labels[j] == i]
+        count = len(cluster_rows)
+        pos = sum(1 for r in cluster_rows if r["sentiment_label"] == "positivo")
+        neg = sum(1 for r in cluster_rows if r["sentiment_label"] == "negativo")
+        neu = count - pos - neg
+
+        if pos >= neg and pos >= neu:
+            dominant = "positivo"
+        elif neg >= pos and neg >= neu:
+            dominant = "negativo"
+        else:
+            dominant = "neutro"
+
+        clusters.append({
+            "cluster_id": i,
+            "cluster_name": f"Tópico {i + 1}",
+            "top_terms": ", ".join(top_words),
+            "count": count,
+            "positive_count": pos,
+            "negative_count": neg,
+            "neutral_count": neu,
+            "dominant_sentiment": dominant,
+        })
+
+    clusters.sort(key=lambda c: c["count"], reverse=True)
+    return clusters
+
+
+@app.get("/clustering")
+def clustering(
+    hours: int = Query(default=720, ge=1, le=8760),
+    n_clusters: int = Query(default=5, ge=2, le=10),
+    top_terms: int = Query(default=8, ge=3, le=20),
+    force_refresh: bool = Query(default=False),
+) -> Dict[str, Any]:
+    """Agrupa as publicações em tópicos usando K-Means + TF-IDF."""
+    global _cluster_cache
+
+    cache_key = f"{hours}_{n_clusters}_{top_terms}"
+    now = datetime.now(timezone.utc)
+
+    # Retorna cache se ainda válido
+    if (
+        not force_refresh
+        and _cluster_cache["result"] is not None
+        and _cluster_cache.get("key") == cache_key
+        and _cluster_cache["computed_at"] is not None
+        and (now - _cluster_cache["computed_at"]).total_seconds() < _CLUSTER_CACHE_TTL_SECONDS
+    ):
+        return _cluster_cache["result"]
+
+    cutoff = (now - timedelta(hours=hours)).isoformat()
+    rows = query_db(
+        """
+        SELECT text_content, sentiment_label
+        FROM reddit_mentions
+        WHERE created_utc >= ?
+        LIMIT 3000
+        """,
+        (cutoff,),
+    )
+
+    min_docs = n_clusters * 3
+    if len(rows) < min_docs:
+        return {
+            "error": f"Dados insuficientes para clustering (mínimo {min_docs}, encontrado {len(rows)}). "
+                     "Aumente o parâmetro 'hours' ou aguarde mais coletas.",
+            "records_found": len(rows),
+        }
+
+    clusters = _run_clustering(rows, n_clusters, top_terms)
+
+    result = {
+        "generated_at": now.isoformat(),
+        "hours": hours,
+        "n_clusters": n_clusters,
+        "total_records": len(rows),
+        "clusters": clusters,
+    }
+    _cluster_cache = {"result": result, "computed_at": now, "key": cache_key}
+    return result
+
+
+@app.get("/clustering/grafana")
+def clustering_grafana(
+    hours: int = Query(default=720, ge=1, le=8760),
+    n_clusters: int = Query(default=5, ge=2, le=10),
+) -> List[Dict[str, Any]]:
+    """
+    Retorna clustering em formato flat (lista de objetos) compatível com
+    o plugin Infinity do Grafana para uso em tabelas e gráficos de barras.
+    """
+    result = clustering(hours=hours, n_clusters=n_clusters, top_terms=8)
+    if "error" in result:
+        return []
+    return result.get("clusters", [])
 
 
 @app.get("/export/csv")
