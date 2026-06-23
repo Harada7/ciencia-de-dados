@@ -1,66 +1,101 @@
-# Crypto Sentiment Monitor
+# 📊 Crypto Sentiment Monitor
 
-Sistema de monitoramento e análise de sentimento do mercado de criptomoedas com base em portais de notícias internacionais.
+> Sistema de monitoramento e análise de sentimento do mercado de criptomoedas com base em portais de notícias internacionais.
 
 Projeto final da disciplina de **Ciência de Dados** — UNIUBE (Prof. Igor Junqueira, 2026).
 
 ---
 
-## Como rodar
+## 🖥️ Preview do Dashboard
 
-### Pré-requisitos
-
-```bash
-py -m pip install -r requirements.txt
-py -m pip install yfinance scipy statsmodels matplotlib
-```
-
-### 1 — Iniciar o backend (API + coleta automática)
-
-Abra um terminal e execute:
-
-```bash
-cd C:\Users\Casa\Documents\ciencia-de-dados
-py -m uvicorn app:app --reload
-```
-
-A API ficará disponível em: `http://localhost:8000`  
-Documentação interativa: `http://localhost:8000/docs`
-
-### 2 — Iniciar o dashboard
-
-Abra **outro terminal** e execute:
-
-```bash
-cd C:\Users\Casa\Documents\ciencia-de-dados
-py -m streamlit run dashboard.py
-```
-
-O dashboard abrirá automaticamente em: `http://localhost:8501`
+O dashboard exibe em tempo real:
+- 📌 Visão geral com métricas e narrativa automática dos dados
+- 📈 Distribuição de sentimento (positivo / neutro / negativo)
+- 🕒 Evolução temporal do sentimento
+- ⭐ Personalidades mais mencionadas
+- 🔍 Clustering de tópicos (K-Means + TF-IDF)
+- 📉 Correlação entre sentimento e preço do Bitcoin
 
 ---
 
-## Populando o banco de dados
+## ⚙️ Instalação
 
-### Dados históricos via NewsAPI (rodar uma vez)
+### 1. Clone o repositório
+
+```bash
+git clone https://github.com/Harada7/ciencia-de-dados.git
+cd ciencia-de-dados
+```
+
+### 2. Instale as dependências
+
+```bash
+pip install -r requirements.txt
+pip install yfinance scipy statsmodels matplotlib
+```
+
+> ⚠️ Se o comando `pip` não funcionar, use `py -m pip` no lugar.
+
+---
+
+## 🗄️ Populando o banco de dados
+
+O banco de dados **não está incluso** no repositório. É necessário popular antes de rodar o dashboard.
+
+### Opção A — Dados históricos reais (recomendado)
+
+Importa ~652 artigos reais de portais como CoinDesk, Reuters, Bloomberg Crypto etc.:
 
 ```bash
 py import_newsapi.py
 ```
 
-Importa ~652 artigos reais de portais como Reuters, CoinDesk, Bloomberg Crypto, etc.
+> ℹ️ Necessita de uma chave da [NewsAPI.org](https://newsapi.org) (plano gratuito disponível).  
+> Defina a variável de ambiente `NEWSAPI_KEY` ou edite diretamente o arquivo.
 
-### Dados de semente (opcional)
+### Opção B — Dados de semente para testes rápidos
+
+Insere 72 posts realistas para testar o dashboard sem precisar da NewsAPI:
 
 ```bash
 py seed_data.py
 ```
 
-Insere 72 posts realistas para testes iniciais.
+---
+
+## 🚀 Como rodar
+
+Você precisará de **dois terminais abertos** ao mesmo tempo.
+
+### Terminal 1 — Backend (API + coleta automática)
+
+```bash
+py -m uvicorn app:app --reload
+```
+
+Aguarde aparecer:
+```
+INFO:     Uvicorn running on http://127.0.0.1:8000
+```
+
+### Terminal 2 — Dashboard
+
+```bash
+py -m streamlit run dashboard.py
+```
+
+O dashboard abrirá automaticamente no navegador em:
+
+```
+http://localhost:8501
+```
+
+> 💡 O sistema coleta novas notícias automaticamente a cada **30 minutos**.  
+> O dashboard atualiza sozinho a cada **60 segundos**.
 
 ---
 
-## Estrutura do projeto
+## 📁 Estrutura do projeto
 
 ```
 ciencia-de-dados/
@@ -69,12 +104,28 @@ ciencia-de-dados/
 ├── import_newsapi.py   # Importação histórica via NewsAPI.org
 ├── seed_data.py        # Dados de semente para testes
 ├── requirements.txt    # Dependências Python
-└── .env.example        # Variáveis de ambiente (copie para .env)
+├── .env.example        # Modelo de variáveis de ambiente
+└── README.md           # Este arquivo
 ```
 
 ---
 
-## Endpoints da API
+## 🌐 Fontes de notícias monitoradas
+
+O sistema coleta automaticamente via RSS de 16 portais internacionais:
+
+| Portal | Portal | Portal | Portal |
+|---|---|---|---|
+| CoinDesk | CoinTelegraph | Decrypt | Bitcoin Magazine |
+| CryptoNews | NewsBTC | AMBCrypto | CryptoPotato |
+| BeInCrypto | CoinJournal | CryptoSlate | Bitcoinist |
+| U.Today | CryptoNewsFlash | Daily Hodl | ZyCrypto |
+
+---
+
+## 🔌 Endpoints da API
+
+Com o backend rodando, acesse `http://localhost:8000/docs` para a documentação completa.
 
 | Endpoint | Método | Descrição |
 |---|---|---|
@@ -88,7 +139,7 @@ ciencia-de-dados/
 
 ---
 
-## Tecnologias
+## 🛠️ Tecnologias utilizadas
 
 | Componente | Tecnologia |
 |---|---|
@@ -103,6 +154,23 @@ ciencia-de-dados/
 
 ---
 
-## Fontes de dados monitoradas (RSS)
+## ❓ Solução de problemas
 
-CoinDesk · CoinTelegraph · Decrypt · Bitcoin Magazine · CryptoNews · NewsBTC · AMBCrypto · CryptoPotato · BeInCrypto · CoinJournal · CryptoSlate · Bitcoinist · U.Today · CryptoNewsFlash · Daily Hodl · ZyCrypto
+**`pip` não reconhecido:**
+```bash
+py -m pip install -r requirements.txt
+```
+
+**`uvicorn` não reconhecido:**
+```bash
+py -m uvicorn app:app --reload
+```
+
+**Dashboard aparece vazio:**
+- Certifique-se de que o backend (Terminal 1) está rodando
+- Execute `py seed_data.py` ou `py import_newsapi.py` para popular o banco
+
+**Erro de módulo não encontrado:**
+```bash
+py -m pip install yfinance scipy statsmodels matplotlib streamlit-autorefresh
+```
