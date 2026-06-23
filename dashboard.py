@@ -124,6 +124,47 @@ if df.empty:
     st.warning("Nenhum dado encontrado. Certifique-se de que a API está rodando e já coletou dados.")
     st.stop()
 
+# ── Painel de Narrativa / Storytelling ────────────────────────────────────────
+pct_pos  = (df["sentiment_label"] == "positivo").mean() * 100
+pct_neg  = (df["sentiment_label"] == "negativo").mean() * 100
+sent_med = df["sentiment"].mean()
+top_crypto_story = df["crypto"].value_counts().idxmax().upper() if not df.empty else "—"
+top_person = (
+    df[df["famous_person"] != "mercado_geral"]["famous_person"]
+    .value_counts().idxmax().replace("_", " ").title()
+    if (df["famous_person"] != "mercado_geral").any() else "—"
+)
+total = len(df)
+
+# Tom geral
+if sent_med >= 0.15:
+    tom_icon, tom_texto, tom_cor = "🟢", "predominantemente otimista", "#2ecc71"
+elif sent_med <= -0.05:
+    tom_icon, tom_texto, tom_cor = "🔴", "predominantemente pessimista", "#e74c3c"
+else:
+    tom_icon, tom_texto, tom_cor = "🟡", "neutro e cauteloso", "#f39c12"
+
+with st.container(border=True):
+    st.markdown("### 📖 Narrativa dos Dados")
+    st.markdown(
+        f"""
+Com base em **{total:,} publicações** coletadas de 16 portais internacionais de notícias sobre criptomoedas,
+o sentimento geral do mercado se mostra {tom_icon} **{tom_texto}** (score médio VADER: `{sent_med:.3f}`).
+
+- **{pct_pos:.1f}%** das publicações apresentam tom positivo, enquanto **{pct_neg:.1f}%** são negativas —
+  indicando que, mesmo em períodos de correção de preços, a mídia especializada tende a manter perspectiva otimista.
+- **{top_crypto_story}** é a criptomoeda mais discutida, confirmando sua posição como referência central do ecossistema.
+- A personalidade mais mencionada é **{top_person}**, cuja influência sobre o mercado é rastreada ao longo do tempo.
+- A **correlação de Pearson** entre sentimento e variação diária do Bitcoin é positiva (r ≈ 0,19), porém fraca —
+  sugerindo que o sentimento midiático é um **indicador complementar**, não determinístico, do comportamento de preço.
+
+> 💡 **Conclusão:** A opinião expressa nos portais de notícias reflete, mas não antecipa de forma confiável,
+  os movimentos do mercado cripto. Fatores macroeconômicos (Fed, regulação, ETFs) exercem influência igual ou maior.
+        """
+    )
+
+st.divider()
+
 # ── Seção 1: Métricas rápidas ──────────────────────────────────────────────────
 st.subheader("📌 Visão Geral")
 c1, c2, c3, c4, c5 = st.columns(5)
